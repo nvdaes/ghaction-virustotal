@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import retry from 'async-retry';
 import * as github from '@actions/github';
 import {Context} from '@actions/github/lib/context';
 import {GitHub} from '@actions/github/lib/utils';
@@ -62,24 +63,34 @@ export const getReleaseAssets = async (octokit, release: Release, patterns: Arra
   }) as Array<ReleaseAsset>;
 };
 
-export const downloadReleaseAsset = async (octokit, asset: ReleaseAsset, downloadPath: string): Promise<string> => {
-  return octokit.rest.repos
-    .getReleaseAsset({
-      ...github.context.repo,
-      asset_id: asset.id,
-      request: {
-        headers: {
-          Accept: 'application/octet-stream'
+export const downloadReleaseAsset = async (octokit, asset: ReleaseAsset, downloadPath: string, retrycb?: (msg: string) => void): Promise<string> => {
+  const retries = 10;
+  return await retry(
+    async () =>
+      octokit.rest.repos
+        .getReleaseAsset({
+          ...github.context.repo,
+          asset_id: asset.id,
+          request: {
+            headers: {
+              Accept: 'application/octet-stream'
+            }
+          }
+        })
+        .then(downloadAsset => {
+          fs.writeFileSync(downloadPath, Buffer.from(downloadAsset.data), 'binary');
+          return downloadPath;
+        }),
+    {
+      retries: retries,
+      minTimeout: 2000,
+      onRetry: (err, i) => {
+        if (retrycb) {
+          retrycb(`${err}. Retrying (${i}/${retries})...`);
         }
       }
-    })
-    .then(downloadAsset => {
-      fs.writeFileSync(downloadPath, Buffer.from(downloadAsset.data), 'binary');
-      return downloadPath;
-    })
-    .catch(error => {
-      throw new Error(`Cannot download release asset ${asset.name} (${asset.id}): ${error.message}`);
-    });
+    }
+  );
 };
 
 export const updateReleaseBody = async (octokit, release: Release): Promise<Release> => {
